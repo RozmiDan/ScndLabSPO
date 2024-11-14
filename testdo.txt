@@ -1,0 +1,15 @@
+method myFunction(x : int)
+begin 
+    repeat
+        begin
+            repeat
+                begin
+                    if a == b then a := b;
+                    else a := b;  
+                end;
+            while a + b != 0;
+            break;
+        end;        
+    until x && 0;
+    funkSum(var1, var2);
+end;

@@ -1,0 +1,22 @@
+method myFunction(x : int, flag2 : MyType, VAL32 : array [,] of string) : uint
+var fst_val, scnd_val, thd_val : long;
+begin 
+    while fst_val > (scnd_val - thd_val) do begin
+        while a != b do begin 
+            a + b;
+            if i % 2 == 0 then begin
+                if x == 9 then y := x + 1;
+                else x := 8;
+            end;
+        end;
+        repeat
+        begin
+            if a == b then a := b;
+            else break;  
+        end;
+        while a + b != 0;
+        break;
+        x := 0b01001;
+    end;
+    funkSum(var1, var2);
+end;

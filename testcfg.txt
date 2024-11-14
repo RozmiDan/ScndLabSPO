@@ -1,0 +1,12 @@
+method myFunction(x : int, flag2 : MyType, VAL32 : array [,] of string) : uint
+var fst_val, scnd_val, thd_val : long;
+begin 
+    if i % 2 == 0 then begin
+        x := 0b01001;
+    end;
+    else begin
+        if x == 9 then y := x + 1;
+        else x := 8;
+    end;
+    funkSum(var1, var2);
+end;
