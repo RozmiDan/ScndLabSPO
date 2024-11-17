@@ -40,6 +40,8 @@ tokens{
     Args;
     Indices;
     Elems;
+    Literal;
+    Identifier;
 }
 
 // P a r s e r  p a r t
@@ -135,8 +137,8 @@ sufExpr
 	;
 
 baseExpr :
-     LITERAL  
-    | IDENTIFIER                             
+     LITERAL  -> ^(Literal LITERAL)
+    | IDENTIFIER -> ^(Identifier IDENTIFIER)                         
     | '(' expr ')' -> ^(Braces expr)                         
     ;
 

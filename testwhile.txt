@@ -12,7 +12,10 @@ begin
         repeat
         begin
             if a == b then a := b;
-            else break;  
+            else begin
+            f(a, b, z + 2);
+            break;
+            end;  
         end;
         while a + b != 0;
         break;

@@ -1,0 +1,6 @@
+method myFunction() : bool
+begin 
+    while fst_val > (scnd_val - thd_val) do thd_val := 23 * -2;
+    myArray[1] := x + 5;
+    a := (x+3) * (f(a,b,z-2) / y()[i,j+3]);
+end;
