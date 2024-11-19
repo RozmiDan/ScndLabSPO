@@ -20,7 +20,9 @@ typedef struct {
     int errorCapacity;  
 } ParseResult;
 
-ParseResult parseString(char* input);
+ParseResult* parseString(char* input);
 void freeParseResult(ParseResult* result);
+int writeAstAsDot(ParseResult* result, char* filename);
+void writeTreeAsDot(AstNode* node, FILE* file, int* nodeCounter);
 
 #endif // MYPARSE_H

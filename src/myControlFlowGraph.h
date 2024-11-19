@@ -74,6 +74,8 @@ typedef struct {
     // Поля для хранения информации о функции
     char* functionName;
     char* returnType;
+    char** calledFunctions;             // Массив имен вызываемых функций
+    int calledFunctionCount;
     VariableInfo** arguments;
     int argumentCount;
 } ControlFlowGraph;
@@ -103,15 +105,15 @@ CfgNode* buildCfgForIf(AstNode* ifNode, CfgNode* previousNode, ControlFlowGraph*
 CfgNode* buildCfgForWhile(AstNode* whileNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack);
 CfgNode* buildCfgForDoWhile(AstNode* doWhileNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack);
 CfgNode* buildCfgForBreak(AstNode* breakNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack);
-void buildOperTreeForExpr(AstNode* expressionNode, CfgNode* previousNode);
+void buildOperTreeForExpr(AstNode* expressionNode, CfgNode* previousNode, ControlFlowGraph* cfg);
 
 // Утилиты
 void writeCfgAsDot(ControlFlowGraph* cfg, const char* filename);
 
 // Функции для построения дерева операций
-OperationTree* createOperationTree(char* operation, int childCount);
+OperationTree* createOperationTree(const char* operation, int childCount);
 void addOperationToCfgNode(CfgNode* node, OperationTree* operation);
-OperationTree* buildOperationTreeFromAst(AstNode* astNode);
+OperationTree* buildOperationTreeFromAst(AstNode* astNode, ControlFlowGraph* cfg) ;
 void destroyOperationTree(OperationTree* opTree);
 void writeOperationTreeAsDot(OperationTree* operation, FILE* file, const char* parentLabel);
 const char* mapAstOperationToOperationName(const char* astOperation);

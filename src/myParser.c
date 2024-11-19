@@ -57,10 +57,10 @@ void myReportError(pANTLR3_BASE_RECOGNIZER recognizer) {
     addError(result, buffer, line, position);
 }
 
-ParseResult parseString(char* input) {
-    ParseResult result = {0}; 
-    result.errorCapacity = 4;
-    result.errors = (ErrorInfo**)malloc(result.errorCapacity * sizeof(ErrorInfo*));
+ParseResult* parseString(char* input) {
+    ParseResult* result = (ParseResult*)malloc(sizeof(ParseResult)); 
+    result->errorCapacity = 4;
+    result->errors = (ErrorInfo**)malloc(result->errorCapacity * sizeof(ErrorInfo*));
 
     pANTLR3_INPUT_STREAM inputStream = antlr3FileStreamNew((pANTLR3_UINT8)input, ANTLR3_ENC_UTF8);
     pMyGrammarTestLexer lexer = MyGrammarTestLexerNew(inputStream);
@@ -68,11 +68,11 @@ ParseResult parseString(char* input) {
     pMyGrammarTestParser parser = MyGrammarTestParserNew(tokens);
 
     if (parser == NULL) {
-        addError(&result, "Failed to initialize parser.", 0, 0);
+        addError(result, "Failed to initialize parser.", 0, 0);
         return result;
     }
 
-    parser->pParser->rec->state->userp = &result;
+    parser->pParser->rec->state->userp = result;
     parser->pParser->rec->reportError = myReportError;
 
     MyGrammarTestParser_source_return parseResult = parser->source(parser);
@@ -80,13 +80,13 @@ ParseResult parseString(char* input) {
     if (parser->pParser->rec->state->errorCount > 0) {
         char buffer[256];
         sprintf(buffer, "Parsing failed with %d errors.", parser->pParser->rec->state->errorCount);
-        addError(&result, buffer, 0, 0);
+        addError(result, buffer, 0, 0);
     }
 
     if (parseResult.tree == NULL) {
-        addError(&result, "Parsing failed, no tree generated.", 0, 0);
+        addError(result, "Parsing failed, no tree generated.", 0, 0);
     } else {
-        result.tree = convertToAstNode((pANTLR3_BASE_TREE)parseResult.tree);
+        result->tree = convertToAstNode((pANTLR3_BASE_TREE)parseResult.tree);
     }
 
     tokens->free(tokens);
@@ -106,6 +106,7 @@ void freeParseResult(ParseResult* result) {
         free(result->errors[i]);
     }
     free(result->errors);
+    free(result);
 }
 
 void freeAstNode(AstNode* node) {
@@ -123,4 +124,34 @@ void freeAstNode(AstNode* node) {
 
     free(node->children);
     free(node);
+}
+
+int writeAstAsDot(ParseResult* result, char* filename){
+    FILE* dotFile = fopen(filename, "w");
+    if (dotFile != NULL) {
+        fprintf(dotFile, "digraph ParseTree {\n");
+        fprintf(dotFile, "  node [shape=box];\n");
+        int nodeCounter = 0;
+        writeTreeAsDot(result->tree, dotFile, &nodeCounter); 
+        fprintf(dotFile, "}\n");
+        fclose(dotFile);
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+void writeTreeAsDot(AstNode* node, FILE* file, int* nodeCounter) {
+    if (node == NULL) {
+        return;
+    }
+
+    int currentNodeId = (*nodeCounter)++;
+    fprintf(file, "  node%d [label=\"%s\"];\n", currentNodeId, node->nodeName);
+    
+    for (int i = 0; i < node->childrenCount; i++) {
+        int childNodeId = *nodeCounter;
+        writeTreeAsDot(node->children[i], file, nodeCounter);
+        fprintf(file, "  node%d -> node%d;\n", currentNodeId, childNodeId);
+    }
 }

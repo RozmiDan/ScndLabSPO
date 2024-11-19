@@ -19,6 +19,7 @@ CfgNode* createCfgNode(ControlFlowGraph* cfg, CfgNodeType type, AstNode* astNode
     node->operationCount = 0;
     node->operationCapacity = 2;
     
+    
     if (cfg->nodeCount >= cfg->nodeCapacity) {
         cfg->nodeCapacity = cfg->nodeCapacity ? cfg->nodeCapacity * 2 : 4;
         cfg->nodes = realloc(cfg->nodes, sizeof(CfgNode*) * cfg->nodeCapacity);
@@ -112,6 +113,9 @@ ControlFlowGraph* createControlFlowGraph(AstNode* astRoot) {
     cfg->nodeCount = 0;
     cfg->arguments = NULL;
     cfg->argumentCount = 0;
+    cfg->calledFunctionCount = 0;
+
+    cfg->calledFunctions = NULL;
 
     // Создаем узлы входа и выхода
     cfg->entryNode = createCfgNode(cfg, CFG_NODE_ENTRY, NULL, "Entry");
@@ -461,7 +465,7 @@ CfgNode* buildCfgForExprStatement(AstNode* statement, CfgNode* previousNode, Con
         addSuccessor(previousNode, expressionCfgNode);
 
         // Используем buildOperTreeForExpr для обработки узла Expression и добавления дерева операций к узлу CFG
-        buildOperTreeForExpr(expressionNode, expressionCfgNode);
+        buildOperTreeForExpr(expressionNode, expressionCfgNode, cfg);
         
         return expressionCfgNode; // Возвращаем узел выражения для дальнейшей цепочки
     }
@@ -515,7 +519,7 @@ CfgNode* buildCfgForIf(AstNode* ifNode, CfgNode* previousNode, ControlFlowGraph*
     CfgNode* conditionCfgNode = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "IF Condition");
     addSuccessor(previousNode, conditionCfgNode);
     
-    buildOperTreeForExpr(conditionNode, conditionCfgNode);
+    buildOperTreeForExpr(conditionNode, conditionCfgNode, cfg);
 
     // Создаем узлы для ветвления
     CfgNode* thenEndNode = buildCfgNodeByType(thenStatementNode, conditionCfgNode, cfg, loopStack);
@@ -572,7 +576,7 @@ CfgNode* buildCfgForWhile(AstNode* whileNode, CfgNode* previousNode, ControlFlow
     addSuccessor(previousNode, conditionNodeCfg);
 
     // Строим дерево операций для условия и прикрепляем к узлу CFG
-    buildOperTreeForExpr(conditionNode, conditionNodeCfg);
+    buildOperTreeForExpr(conditionNode, conditionNodeCfg, cfg);
 
     // Создаем узел "After While" для выхода из цикла
     CfgNode* afterWhileNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "After While");
@@ -637,7 +641,7 @@ CfgNode* buildCfgForDoWhile(AstNode* doWhileNode, CfgNode* previousNode, Control
     CfgNode* conditionNodeCfg = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "DoWhile Condition");
     
     // Добавляем дерево операций
-    buildOperTreeForExpr(conditionNode, conditionNodeCfg);
+    buildOperTreeForExpr(conditionNode, conditionNodeCfg, cfg);
     
     addSuccessor(bodyEndNode, conditionNodeCfg);
     addSuccessor(conditionNodeCfg, bodyNodeCfg);
@@ -672,7 +676,7 @@ CfgNode* buildCfgForBreak(AstNode* breakNode, CfgNode* previousNode, ControlFlow
 //-----------------------------
 //Ф-ии построения Дерева Операций 
 
-OperationTree* createOperationTree(char* operation, int childCount) {
+OperationTree* createOperationTree(const char* operation, int childCount) {
     OperationTree* node = malloc(sizeof(OperationTree));
 
     node->operation = strdup(operation);
@@ -688,7 +692,7 @@ OperationTree* createOperationTree(char* operation, int childCount) {
     return node;
 }
 
-OperationTree* buildOperationTreeFromAst(AstNode* astNode) {
+OperationTree* buildOperationTreeFromAst(AstNode* astNode, ControlFlowGraph* cfg) {
     if (!astNode) {
         return NULL;
     }
@@ -710,7 +714,7 @@ OperationTree* buildOperationTreeFromAst(AstNode* astNode) {
     if ((strcmp(astNode->nodeName, "Expression") == 0 || strcmp(astNode->nodeName, "Braces") == 0) 
         && astNode->childrenCount == 1) {
         // Переходим к единственному потомку узла 
-        return buildOperationTreeFromAst(astNode->children[0]);
+        return buildOperationTreeFromAst(astNode->children[0], cfg);
     }
 
     // Обрабатываем узел типа "FunctionCall"
@@ -730,16 +734,25 @@ OperationTree* buildOperationTreeFromAst(AstNode* astNode) {
 
             if (i == 0) {
                 // Первый потомок — это название функции, добавляем его как обычный узел
-                callNode->children[processedChildren++] = buildOperationTreeFromAst(currentChild);
+                callNode->children[processedChildren++] = buildOperationTreeFromAst(currentChild, cfg);
+                // Добавляем название функции в коллекцию вызванных функций графа потока управления
+                cfg->calledFunctionCount++;
+                cfg->calledFunctions = realloc(cfg->calledFunctions, sizeof(char*) * cfg->calledFunctionCount);
+                if (!cfg->calledFunctions) {
+                    perror("Failed to allocate memory for called functions");
+                    // exit(EXIT_FAILURE);
+                }
+                cfg->calledFunctions[cfg->calledFunctionCount - 1] = strdup(currentChild->nodeName);
+
             } else if (strcmp(currentChild->nodeName, "Args") == 0) {
                 // Второй или любой другой потомок, который является "Args", добавляем его аргументы
                 for (int j = 0; j < currentChild->childrenCount; j++) {
                     callNode->children = realloc(callNode->children, sizeof(OperationTree*) * (processedChildren + 1));
-                    callNode->children[processedChildren++] = buildOperationTreeFromAst(currentChild->children[j]);
+                    callNode->children[processedChildren++] = buildOperationTreeFromAst(currentChild->children[j], cfg);
                 }
             } else {
                 // Обрабатываем других потомков, которые не являются "Args"
-                callNode->children[processedChildren++] = buildOperationTreeFromAst(currentChild);
+                callNode->children[processedChildren++] = buildOperationTreeFromAst(currentChild, cfg);
             }
         }
 
@@ -760,11 +773,11 @@ OperationTree* buildOperationTreeFromAst(AstNode* astNode) {
                 // Обрабатываем потомков "Indices"
                 AstNode* indicesNode = astNode->children[i];
                 for (int j = 0; j < indicesNode->childrenCount; j++) {
-                    getElemNode->children[childIndex++] = buildOperationTreeFromAst(indicesNode->children[j]);
+                    getElemNode->children[childIndex++] = buildOperationTreeFromAst(indicesNode->children[j], cfg);
                 }
             } else {
                 // Обрабатываем остальных потомков как обычно
-                getElemNode->children[childIndex++] = buildOperationTreeFromAst(astNode->children[i]);
+                getElemNode->children[childIndex++] = buildOperationTreeFromAst(astNode->children[i], cfg);
             }
         }
 
@@ -778,18 +791,18 @@ OperationTree* buildOperationTreeFromAst(AstNode* astNode) {
 
     // Рекурсивно строим дерево для каждого дочернего узла
     for (int i = 0; i < astNode->childrenCount; i++) {
-        operationNode->children[i] = buildOperationTreeFromAst(astNode->children[i]);
+        operationNode->children[i] = buildOperationTreeFromAst(astNode->children[i], cfg);
     }
 
     return operationNode;
 }
 
-void buildOperTreeForExpr(AstNode* expressionNode, CfgNode* previousNode) {
+void buildOperTreeForExpr(AstNode* expressionNode, CfgNode* previousNode, ControlFlowGraph* cfg) {
     if (!expressionNode || strcmp(expressionNode->nodeName, "Expression") != 0) {
-        return previousNode;
+        return ;
     }
 
-    OperationTree* operationTree = buildOperationTreeFromAst(expressionNode->children[0]);
+    OperationTree* operationTree = buildOperationTreeFromAst(expressionNode->children[0], cfg);
    
     // Расширяем массив operations для хранения нового дерева операций
     previousNode->operations = realloc(previousNode->operations, sizeof(OperationTree*) * (previousNode->operationCount + 1));
@@ -921,7 +934,13 @@ void destroyControlFlowGraph(ControlFlowGraph* cfg) {
         free(cfg->arguments);
     }
 
-    // Освобождаем сам граф
+    if (cfg->calledFunctions) {
+        for (int i = 0; i < cfg->calledFunctionCount; i++) {
+            free(cfg->calledFunctions[i]);
+        }
+        free(cfg->calledFunctions);
+    }
+
     free(cfg);
 }
 

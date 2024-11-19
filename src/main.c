@@ -3,62 +3,43 @@
 #include "myParser.h"
 #include "myControlFlowGraph.h"
 
-void writeTreeAsDot(AstNode* node, FILE* file, int* nodeCounter) {
-    if (node == NULL) {
-        return;
-    }
-
-    int currentNodeId = (*nodeCounter)++;
-    fprintf(file, "  node%d [label=\"%s\"];\n", currentNodeId, node->nodeName);
-    
-    for (int i = 0; i < node->childrenCount; i++) {
-        int childNodeId = *nodeCounter;
-        writeTreeAsDot(node->children[i], file, nodeCounter);
-        fprintf(file, "  node%d -> node%d;\n", currentNodeId, childNodeId);
-    }
-}
-
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <input_file> <output_dot_file>\n", argv[0]);
         return 1;
     }
 
-    ParseResult result = parseString(argv[1]);
+    ParseResult* result = parseString(argv[1]);
 
-    if (result.errorCount > 0) {
-        for (int i = 0; i < result.errorCount; i++) {
-            printf("Error: %s\n", result.errors[i]->message);
+    if (result->errorCount > 0) {
+        for (int i = 0; i < result->errorCount; i++) {
+            printf("Error: %s\n", result->errors[i]->message);
         }
+        return 0;
     }
 
-    if (result.tree != NULL) {
+    if (result->tree != NULL) {
         printf("Tree generated successfully.\n");
-
-        FILE* dotFile = fopen(argv[2], "w");
-        if (dotFile != NULL) {
-            fprintf(dotFile, "digraph ParseTree {\n");
-            fprintf(dotFile, "  node [shape=box];\n");
-            int nodeCounter = 0;
-            writeTreeAsDot(result.tree, dotFile, &nodeCounter); 
-            fprintf(dotFile, "}\n");
-            fclose(dotFile);
+        if(writeAstAsDot(result, argv[2])){
             printf("Dot file generated: %s\n", argv[2]);
         } else {
             printf("Failed to create dot file.\n");
+            return 0;
         }
     } else {
         printf("Failed to generate tree.\n");
+        return 0;
     }
 
     //CFG
-    ControlFlowGraph* cfg = createControlFlowGraph(result.tree);
-    //TODO: вывод ошибок из структуры!!!!!!!!!!!!
+    ControlFlowGraph* cfg = createControlFlowGraph(result->tree);
+
     if(cfg->errors->head != NULL){
         for (size_t i = 0; i < cfg->errors->count; i++) {
             printf("%s\n",cfg->errors->head->message);
         }
     }
+
     if(cfg->arguments) {
         for (size_t i = 0; i < cfg->argumentCount; i++) {
             printf("Variable: %s, Type: ", cfg->arguments[i]->name);
@@ -69,10 +50,12 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    writeCfgAsDot(cfg, "control_flow_graph.dot");
-    destroyControlFlowGraph(cfg);
 
-    freeParseResult(&result);
+    writeCfgAsDot(cfg, "control_flow_graph.dot");
+
+    destroyControlFlowGraph(cfg);
+    freeParseResult(result);
+
     printf("Finishing programm\n");
 
     return 0;
