@@ -1,4 +1,5 @@
 method myFunction() : bool
+var fst_val, scnd_val : Mytype; fth_val : long; fth_val : char; fth_val;
 begin 
     while fst_val > (scnd_val - thd_val) do thd_val := 23 * -2;
     myArray[1] := x + 5;

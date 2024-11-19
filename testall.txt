@@ -1,0 +1,13 @@
+method myFunction(x : int, flag2, VAL32 : array [,] of array [,,] of array[,,,] of string) : uint
+var frth_val;
+begin 
+    while fst_val > (scnd_val - thd_val) do thd_val := 23 - 2 * 6 + 12;
+    myVar := x + 5;
+    if 2 + 3 + 4 == 2 + (3 + 4) then begin
+        x := 0b01001;
+        if x == 9 then y := x + 1 * a := b * c + 3 * d;
+        repeat
+            flag := !flag;
+        until x && 0;
+    end;
+end;

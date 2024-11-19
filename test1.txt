@@ -1,4 +1,4 @@
 method calculateSum(x : bool) : uint
-var a : array [,] of array [,] of int;
+var a : array [,,] of array [,] of bool;
 begin 
 end;

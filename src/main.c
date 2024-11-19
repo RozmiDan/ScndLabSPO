@@ -53,10 +53,27 @@ int main(int argc, char *argv[]) {
 
     //CFG
     ControlFlowGraph* cfg = createControlFlowGraph(result.tree);
+    //TODO: вывод ошибок из структуры!!!!!!!!!!!!
+    if(cfg->errors->head != NULL){
+        for (size_t i = 0; i < cfg->errors->count; i++) {
+            printf("%s\n",cfg->errors->head->message);
+        }
+    }
+    if(cfg->arguments) {
+        for (size_t i = 0; i < cfg->argumentCount; i++) {
+            printf("Variable: %s, Type: ", cfg->arguments[i]->name);
+            if (cfg->arguments[i]->type == NULL) {
+                printf("%s\n", "undefined");
+            } else {
+                printf("%s\n", cfg->arguments[i]->type);
+            }
+        }
+    }
     writeCfgAsDot(cfg, "control_flow_graph.dot");
     destroyControlFlowGraph(cfg);
 
     freeParseResult(&result);
+    printf("Finishing programm\n");
 
     return 0;
 }

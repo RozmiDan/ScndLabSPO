@@ -50,16 +50,15 @@ source : sourceItem* -> ^(Source sourceItem*);
 
 sourceItem : funcDef -> ^(SourceItem funcDef);
 fragment funcDef : 'method' funcSignature ( body | ';' ) -> ^(FuncDef funcSignature body?);
-fragment body : ( 'var' ( list_identifier (':' typeRef)? ';' )* )? blockStatement -> ^(BodySig ^(VarsDefenition list_identifier typeRef?)* blockStatement) ; 
+fragment body : ( 'var' ( list_identifier (':' typeRef)? ';' )* )? blockStatement -> ^(BodySig ^(VarsDefenition list_identifier typeRef)* blockStatement) ; 
 list_identifier: (IDENTIFIER (',' IDENTIFIER)*)? -> ^(ListIdentifier IDENTIFIER*) ;
 
 typeRef : builtin -> ^(BuiltinType builtin)
     | custom -> ^(CustomType custom)
     | arrayType;
-//    | array ;                             
+
 fragment builtin : ('bool' | 'byte' | 'int' | 'uint' | 'long' | 'ulong' | 'char' | 'string');
 fragment custom : IDENTIFIER ;
-//fragment array : 'array' '[' (',')* ']' 'of' typeRef -> ^(ArrayType typeRef) ;
 
 arrayType
     : 'array' '[' elems ']' 'of' typeRef -> ^(ArrayType typeRef elems)
@@ -72,7 +71,7 @@ elems
 funcSignature : IDENTIFIER '(' list_argDef ')' typeRefDef? -> ^(FuncSignature IDENTIFIER list_argDef typeRefDef?);     
 fragment list_argDef : (argDef (',' argDef)*)? -> ^( ListArgDefs argDef*) ;		    
 fragment argDef : IDENTIFIER typeRefDef? -> ^(Argument IDENTIFIER typeRefDef?);
-fragment typeRefDef : ':' typeRef -> ^(TypeRef typeRef) ;
+fragment typeRefDef : ':' typeRef ->  typeRef ;
 
 // S t a t e m e n t s
 

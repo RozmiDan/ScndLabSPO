@@ -45,6 +45,21 @@ CfgNodeStack* createCfgNodeStack() {
     return stack;
 }
 
+void addCfgError(ErrorCollection* collection, const char* message) {
+    ErrorInfoCfg* newError = malloc(sizeof(ErrorInfoCfg));
+    newError->message = strdup(message);
+    newError->next = NULL;
+
+    if (!collection->head) {
+        collection->head = newError;
+        collection->tail = newError;
+    } else {
+        collection->tail->next = newError;
+        collection->tail = newError;
+    }
+    collection->count++;
+}
+
 void addOperationToCfgNode(CfgNode* node, OperationTree* operation) {
     if (node->operationCount >= node->operationCapacity) {
         node->operationCapacity *= 2;
@@ -95,11 +110,22 @@ ControlFlowGraph* createControlFlowGraph(AstNode* astRoot) {
     cfg->nodeCapacity = 4;  // Начальная емкость для хранения узлов графа
     cfg->nodes = malloc(sizeof(CfgNode*) * cfg->nodeCapacity);
     cfg->nodeCount = 0;
+    cfg->arguments = NULL;
+    cfg->argumentCount = 0;
 
     // Создаем узлы входа и выхода
     cfg->entryNode = createCfgNode(cfg, CFG_NODE_ENTRY, NULL, "Entry");
     cfg->exitNode = createCfgNode(cfg, CFG_NODE_EXIT, NULL, "Exit");
     
+    // Инициализация коллекции ошибок
+    cfg->errors = malloc(sizeof(ErrorCollection));
+    if (!cfg->errors) {
+        free(cfg);
+        return NULL;
+    }
+    cfg->errors->head = NULL;
+    cfg->errors->count = 0;
+
     // Создаем стек для обработки циклов
     CfgNodeStack* loopStack = createCfgNodeStack();
 
@@ -112,7 +138,6 @@ ControlFlowGraph* createControlFlowGraph(AstNode* astRoot) {
 
     CfgNode* lastNode = buildCfgForFunctionBody(childNode, cfg->entryNode, cfg, loopStack);
     addSuccessor(lastNode, cfg->exitNode);
-
     destroyCfgNodeStack(loopStack);
 
     return cfg;
@@ -149,20 +174,29 @@ CfgNode* buildCfgForFuncSignature(AstNode* funcSignatureNode, CfgNode* previousN
     AstNode* listArgDefsNode = funcSignatureNode->children[1];
     if (strcmp(listArgDefsNode->nodeName, "ListArgDefs") == 0) {
         cfg->argumentCount = listArgDefsNode->childrenCount;
-        cfg->argumentNames = malloc(cfg->argumentCount * sizeof(char*));
-        cfg->argumentTypes = malloc(cfg->argumentCount * sizeof(char*));
+        cfg->arguments = malloc(cfg->argumentCount * sizeof(VariableInfo*));
 
         for (int i = 0; i < cfg->argumentCount; i++) {
             AstNode* argNode = listArgDefsNode->children[i];
             if (strcmp(argNode->nodeName, "Argument") == 0) {
-                AstNode* argNameNode = argNode->children[0];
-                AstNode* argTypeNode = argNode->children[1];
+                VariableInfo* variable = malloc(sizeof(VariableInfo));
 
-                cfg->argumentNames[i] = strdup(argNameNode->nodeName);
-                while(argTypeNode->children != NULL){
-                    argTypeNode = argTypeNode->children[0];
+                if (argNode->childrenCount == 2) {
+                    // Первый потомок — имя переменной, второй — тип
+                    AstNode* argNameNode = argNode->children[0];
+                    AstNode* argTypeNode = argNode->children[1];
+
+                    variable->name = strdup(argNameNode->nodeName);
+                    //variable->type = strdup(argTypeNode->nodeName);
+                    variable->type = handleVariableType(argTypeNode, cfg);
+                } else if (argNode->childrenCount == 1) {
+                    // Один потомок — считаем его именем, тип не задается
+                    AstNode* argNameNode = argNode->children[0];
+
+                    variable->name = strdup(argNameNode->nodeName);  // Имя переменной отсутствует
+                    variable->type = NULL;
                 }
-                cfg->argumentTypes[i] = strdup(argTypeNode->nodeName);
+                cfg->arguments[i] = variable;
             }
         }
     }
@@ -173,6 +207,11 @@ CfgNode* buildCfgForFuncSignature(AstNode* funcSignatureNode, CfgNode* previousN
         if (strcmp(returnTypeNode->nodeName, "TypeRef") == 0) {
             cfg->returnType = strdup(returnTypeNode->nodeName);
         }
+        ////--------------------------------------------------------------------
+        else {
+            cfg->returnType = strdup("void"); 
+        }
+        ////-------------------------------------------------------------
     } else {
         cfg->returnType = strdup("void");  // Если тип не указан, предполагаем "void"
     }
@@ -184,15 +223,206 @@ CfgNode* buildCfgForBodySig(AstNode* bodySigNode, CfgNode* previousNode, Control
     if (!bodySigNode || strcmp(bodySigNode->nodeName, "BodySig") != 0) {
         return previousNode;
     }
-    
-    if(bodySigNode->childrenCount == 2){
-        
-        //------------------------- Todo обработать Vars_list если он есть
-        
-        // Обрабатываем тело функции как блок операторов
-        return buildCfgForBlock(bodySigNode->children[1], previousNode, cfg, loopStack);
-    } else if(bodySigNode->childrenCount == 1){
-        return buildCfgForBlock(bodySigNode->children[0], previousNode, cfg, loopStack);
+
+    CfgNode* currentNode = previousNode;
+    AstNode* blockStatementNode = NULL;
+
+    // Проходим по всем потомкам узла "BodySig"
+    for (int i = 0; i < bodySigNode->childrenCount; i++) {
+        AstNode* childNode = bodySigNode->children[i];
+
+        // Если потомок - "VarsDefenition"
+        if (strcmp(childNode->nodeName, "VarsDefenition") == 0) {
+            // Обработка объявления переменных
+            handleVarsDefenition(childNode, cfg);
+        } else if (strcmp(childNode->nodeName, "BlockStatement") == 0) {
+            // Запоминаем узел "BlockStatement" для дальнейшей обработки
+            blockStatementNode = childNode;
+        }
+    }
+
+    // Обрабатываем "BlockStatement", если он был найден
+    if (blockStatementNode) {
+        currentNode = buildCfgForBlock(blockStatementNode, currentNode, cfg, loopStack);
+    }
+
+    return currentNode;
+}
+
+void handleVarsDefenition(AstNode* varsDefNode, ControlFlowGraph* cfg) {
+    if (!varsDefNode || strcmp(varsDefNode->nodeName, "VarsDefenition") != 0) {
+        return;
+    }
+
+    VariableInfo** temporaryVariables = NULL;  // Временный массив для хранения добавляемых переменных
+    int temporaryVariableCount = 0;
+
+    // Итерируем по всем потомкам "VarsDefenition"
+    for (int i = 0; i < varsDefNode->childrenCount; i++) {
+        AstNode* childNode = varsDefNode->children[i];
+
+        if (strcmp(childNode->nodeName, "ListIdentifier") == 0) {
+            // Обработка списка идентификаторов
+            for (int j = 0; j < childNode->childrenCount; j++) {
+                AstNode* identifierNode = childNode->children[j];
+                
+                // Создаем новую переменную с именем из ListIdentifier и типом NULL (пока не установлен)
+                VariableInfo* newVariable = malloc(sizeof(VariableInfo));
+                newVariable->name = strdup(identifierNode->nodeName);
+                newVariable->type = NULL;
+
+                // Добавляем переменную во временный массив
+                temporaryVariables = realloc(temporaryVariables, sizeof(VariableInfo*) * (temporaryVariableCount + 1));
+                if (!temporaryVariables) {
+                    perror("Failed to allocate memory for variables");
+                }
+
+                temporaryVariables[temporaryVariableCount] = newVariable;
+                temporaryVariableCount++;
+            }
+        } else if (strcmp(childNode->nodeName, "BuiltinType") == 0 ||
+                   strcmp(childNode->nodeName, "CustomType") == 0 ||
+                   strcmp(childNode->nodeName, "ArrayType") == 0) {
+            // Обработка типа данных
+            char* variableType = handleVariableType(childNode, cfg);
+
+            // Присваиваем тип всем временно добавленным переменным
+            for (int k = 0; k < temporaryVariableCount; k++) {
+                if (temporaryVariables[k]->type == NULL) {
+                    temporaryVariables[k]->type = strdup(variableType);
+                }
+            }
+
+            free(variableType);
+        } else {
+            // Ошибка: неизвестный потомок в "VarsDefenition"
+            addCfgError(cfg->errors, "Unknown node in VarsDefenition");
+        }
+    }
+    // После обработки всех потомков добавляем временные переменные в граф
+    if (temporaryVariableCount > 0) {
+        cfg->argumentCount += temporaryVariableCount;
+        cfg->arguments = realloc(cfg->arguments, sizeof(VariableInfo*) * cfg->argumentCount);
+        if (!cfg->arguments) {
+            perror("Failed to allocate memory for variables in CFG");
+            // exit(EXIT_FAILURE);
+        }
+
+        // Копируем временные переменные в массив переменных CFG
+        for (int k = 0; k < temporaryVariableCount; k++) {
+            cfg->arguments[cfg->argumentCount - temporaryVariableCount + k] = temporaryVariables[k];
+        }
+
+        // Освобождаем временный массив указателей (но не сами переменные)
+        free(temporaryVariables);
+    }
+}
+
+// Функция для обработки типа данных
+char* handleVariableType(AstNode* typeNode, ControlFlowGraph* cfg) {
+    if (!typeNode) return NULL;
+
+    if (strcmp(typeNode->nodeName, "BuiltinType") == 0) {
+        // Обработка для "BuiltinType"
+        if (typeNode->childrenCount > 0) {
+            AstNode* type = typeNode->children[0];
+            return strdup(type->nodeName);
+        } else {
+            return NULL;
+        }
+
+    } else if (strcmp(typeNode->nodeName, "CustomType") == 0) {
+        // Обработка для "CustomType"
+        if (typeNode->childrenCount > 0) {
+            AstNode* type = typeNode->children[0];
+            return strdup(type->nodeName);
+        } else {
+            return NULL;
+        }
+
+    } else if (strcmp(typeNode->nodeName, "ArrayType") == 0) {
+        // Начинаем с базового типа
+        char* baseType = handleVariableType(typeNode->children[0], cfg);
+        if (!baseType) {
+            addCfgError(cfg->errors, "Failed to determine base type in ArrayType");
+            return NULL;
+        }
+
+        // Обрабатываем узел "Elems" для получения размерности массива
+        char* dimensions = NULL;
+        for (int i = 1; i < typeNode->childrenCount; i++) {
+            if (strcmp(typeNode->children[i]->nodeName, "Elems") == 0) {
+                AstNode* elemsNode = typeNode->children[i];
+                
+                // Собираем размерности
+                char* currentDimensions = malloc(elemsNode->childrenCount * 2);  // Размеры вида ",," + '\0'
+                if (!currentDimensions) {
+                    perror("Failed to allocate memory for dimensions");
+                    free(baseType);
+                    return NULL;
+                }
+
+                for (int j = 0; j < elemsNode->childrenCount; j++) {
+                    currentDimensions[j] = ',';
+                }
+                currentDimensions[elemsNode->childrenCount] = '\0';
+
+                if (dimensions) {
+                    // Комбинируем с уже существующими размерностями
+                    size_t newSize = strlen(dimensions) + strlen(currentDimensions) + 3;  // Existing + "[]" + '\0'
+                    char* newDimensions = malloc(newSize);
+                    if (!newDimensions) {
+                        perror("Failed to allocate memory for new dimensions");
+                        free(baseType);
+                        free(dimensions);
+                        free(currentDimensions);
+                        return NULL;
+                    }
+                    snprintf(newDimensions, newSize, "%s[%s]", dimensions, currentDimensions);
+                    free(dimensions);
+                    free(currentDimensions);
+                    dimensions = newDimensions;
+                } else {
+                    // Начинаем с первой размерности
+                    size_t newSize = strlen(currentDimensions) + 3;  // "[]" + '\0'
+                    dimensions = malloc(newSize);
+                    if (!dimensions) {
+                        perror("Failed to allocate memory for dimensions");
+                        free(baseType);
+                        free(currentDimensions);
+                        return NULL;
+                    }
+                    snprintf(dimensions, newSize, "[%s]", currentDimensions);
+                    free(currentDimensions);
+                }
+            }
+        }
+
+        // Если не нашли узла "Elems", просто создаем пустую размерность
+        if (!dimensions) {
+            dimensions = strdup("[]");
+        }
+
+        // Формируем итоговую строку для "ArrayType"
+        size_t arrayTypeSize = strlen(baseType) + strlen(dimensions) + 12;  // "array of " + baseType + dimensions + '\0'
+        char* arrayType = malloc(arrayTypeSize);
+        if (!arrayType) {
+            perror("Failed to allocate memory for arrayType");
+            free(baseType);
+            free(dimensions);
+            return NULL;
+        }
+        snprintf(arrayType, arrayTypeSize, "array %s of %s", dimensions, baseType);
+
+        free(baseType);
+        free(dimensions);
+
+        return arrayType;
+
+    } else {
+        // Ошибка: неизвестный тип данных
+        addCfgError(cfg->errors, "Unknown type in variable definition");
+        return NULL;
     }
 }
 
@@ -218,6 +448,229 @@ CfgNode* buildCfgNodeByType(AstNode* node, CfgNode* previousNode, ControlFlowGra
     }
     return previousNode;
 }
+
+CfgNode* buildCfgForExprStatement(AstNode* statement, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack* loopStack) {
+    if (!statement || strcmp(statement->nodeName, "ExpressionStatement") != 0) {
+        return previousNode;
+    }
+
+    // Переходим к обработке потомка "Expression"
+    if (statement->childrenCount > 0) {
+        AstNode* expressionNode = statement->children[0]; // Потомок Expression
+        CfgNode* expressionCfgNode = createCfgNode(cfg, CFG_NODE_STATEMENT, expressionNode, "Expression Statement");
+        addSuccessor(previousNode, expressionCfgNode);
+
+        // Используем buildOperTreeForExpr для обработки узла Expression и добавления дерева операций к узлу CFG
+        buildOperTreeForExpr(expressionNode, expressionCfgNode);
+        
+        return expressionCfgNode; // Возвращаем узел выражения для дальнейшей цепочки
+    }
+
+    // Если потомка нет, возвращаем узел "Expression statement"
+    return previousNode;
+}
+
+CfgNode* buildCfgForBlock(AstNode* blockNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack* loopStack) {
+    if (!blockNode || strcmp(blockNode->nodeName, "BlockStatement") != 0 ) { 
+        return previousNode;
+    }
+
+    // Создаем узел для входа в блок
+    CfgNode* blockEntryNode = createCfgNode(cfg, CFG_NODE_BLOCK, NULL, "Block");
+    addSuccessor(previousNode, blockEntryNode);
+
+    CfgNode* currentNode = blockEntryNode;
+
+    // Обработка всех операторов внутри блока
+    for (int i = 0; i < blockNode->childrenCount; i++) {
+        AstNode* childStatement = blockNode->children[i];
+
+        // Рекурсивный вызов диспетчера для каждого дочернего узла
+        currentNode = buildCfgNodeByType(childStatement, currentNode, cfg, loopStack);
+
+        // Проверяем, если текущий узел является `break`, прерываем дальнейшую обработку блока
+        if (currentNode->type == CFG_NODE_BREAK) {
+            // Возвращаем узел `break`, чтобы внешняя функция могла корректно обработать его
+            return currentNode;
+        }
+    }
+
+    return currentNode;
+}
+
+CfgNode* buildCfgForIf(AstNode* ifNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack* loopStack) {
+    if (!ifNode || strcmp(ifNode->nodeName, "IfStatement") != 0) {
+        return previousNode;
+    }
+
+    // В AST для If: 
+    // children[0] - условие
+    // children[1] - then-ветка 
+    // children[2] - else-ветка (optional)
+    AstNode* conditionNode = ifNode->children[0];
+    AstNode* thenStatementNode = ifNode->children[1];
+    AstNode* elseStatementNode = (ifNode->childrenCount > 2) ? ifNode->children[2] : NULL;
+
+    // Создаем узел условия
+    CfgNode* conditionCfgNode = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "IF Condition");
+    addSuccessor(previousNode, conditionCfgNode);
+    
+    buildOperTreeForExpr(conditionNode, conditionCfgNode);
+
+    // Создаем узлы для ветвления
+    CfgNode* thenEndNode = buildCfgNodeByType(thenStatementNode, conditionCfgNode, cfg, loopStack);
+    
+    if (thenEndNode->type == CFG_NODE_BREAK && elseStatementNode == NULL){
+        return thenEndNode;
+    }
+
+    if (elseStatementNode != NULL){
+
+        CfgNode* elseEndNode = buildCfgNodeByType(elseStatementNode, conditionCfgNode, cfg, loopStack);
+   
+        if (elseEndNode->type == CFG_NODE_BREAK && thenEndNode->type == CFG_NODE_BREAK){
+            // Сценарий 2: Оба содержат break, возвращаем любой из них
+            return thenEndNode; // или elseEndNode - в зависимости от того, что более подходит
+        }
+
+        if (elseEndNode->type != CFG_NODE_BREAK && thenEndNode->type == CFG_NODE_BREAK){
+            // Сценарий 3: Только ветка Then содержит break, Else продолжается
+            return elseEndNode;
+        }
+
+        if (elseEndNode->type == CFG_NODE_BREAK && thenEndNode->type != CFG_NODE_BREAK){
+            // Сценарий 4: Только ветка Else содержит break, Then продолжается
+            return thenEndNode;
+        }
+
+        if (elseEndNode->type != CFG_NODE_BREAK && thenEndNode->type != CFG_NODE_BREAK){
+            // Стандартная обработка обеих ветвей, создаем узел слияния
+            CfgNode* mergeNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "IF Merge");
+            addSuccessor(thenEndNode, mergeNode);
+            addSuccessor(elseEndNode, mergeNode);
+            return mergeNode;
+        }
+    } else {
+        // Если else-ветка отсутствует, создаем узел слияния только для then-ветки
+        CfgNode* mergeNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "IF Merge");
+        addSuccessor(thenEndNode, mergeNode);
+        return mergeNode;
+    }
+
+    // На случай если else отсутствует и thenEndNode не содержит break
+    return thenEndNode;
+    
+}
+
+CfgNode* buildCfgForWhile(AstNode* whileNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack) {
+    if (!whileNode || strcmp(whileNode->nodeName, "WhileStatement") != 0) {
+        return previousNode;
+    }
+    // Создаем узел для условия while
+    AstNode* conditionNode = whileNode->children[0];
+    CfgNode* conditionNodeCfg = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "While Condition");
+    addSuccessor(previousNode, conditionNodeCfg);
+
+    // Строим дерево операций для условия и прикрепляем к узлу CFG
+    buildOperTreeForExpr(conditionNode, conditionNodeCfg);
+
+    // Создаем узел "After While" для выхода из цикла
+    CfgNode* afterWhileNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "After While");
+
+    // Добавляем узел выхода из цикла в стек для break
+    push(loopStack, afterWhileNode);
+
+    // Строим граф для тела цикла
+    AstNode* bodyNode = whileNode->children[1];
+    CfgNode* bodyEndNode = buildCfgNodeByType(bodyNode, conditionNodeCfg, cfg, *loopStack);
+
+    // Проверяем, был ли `break`
+    if (bodyEndNode->type == CFG_NODE_BREAK) {
+        // Если `break` найден, связать условие с узлом выхода и завершить цикл
+        addSuccessor(conditionNodeCfg, afterWhileNode);
+        pop(loopStack);
+        return afterWhileNode;
+    }
+
+    // Добавляем связь от конца тела к условию, чтобы вернуться и проверить условие снова
+    addSuccessor(bodyEndNode, conditionNodeCfg);
+
+    // Условие ведет в узел выхода, если проверка завершена
+    addSuccessor(conditionNodeCfg, afterWhileNode);
+
+    // Удаляем узел из стека после завершения обработки тела цикла
+    pop(loopStack);
+
+    return afterWhileNode;
+}
+
+CfgNode* buildCfgForDoWhile(AstNode* doWhileNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack) {
+    if (!doWhileNode || strcmp(doWhileNode->nodeName, "DoStatement") != 0) {
+        return previousNode;
+    }
+
+    // В AST для do-while:
+    // children[0] - тело цикла
+    // children[1] - условие
+
+    // Создаем узел для тела цикла
+    AstNode* bodyNode = doWhileNode->children[0];
+    CfgNode* bodyNodeCfg = createCfgNode(cfg, CFG_NODE_BLOCK, bodyNode, "DoWhile Body");
+    addSuccessor(previousNode, bodyNodeCfg);
+
+    CfgNode* endNodeCfg = createCfgNode(cfg, CFG_NODE_STATEMENT, bodyNode, "After DoWhile");
+
+
+    // Добавляем узел выхода из цикла в стек для break
+    push(loopStack, endNodeCfg);
+
+    // Строим граф для тела цикла
+    CfgNode* bodyEndNode = buildCfgNodeByType(bodyNode, bodyNodeCfg, cfg, *loopStack);
+    
+    if(bodyEndNode->type == CFG_NODE_BREAK){
+        pop(loopStack);
+        return endNodeCfg;
+    } 
+    
+    // Создаем узел для условия
+    AstNode* conditionNode = doWhileNode->children[1];
+    CfgNode* conditionNodeCfg = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "DoWhile Condition");
+    
+    // Добавляем дерево операций
+    buildOperTreeForExpr(conditionNode, conditionNodeCfg);
+    
+    addSuccessor(bodyEndNode, conditionNodeCfg);
+    addSuccessor(conditionNodeCfg, bodyNodeCfg);
+    addSuccessor(conditionNodeCfg, endNodeCfg);
+    pop(loopStack);
+    return endNodeCfg;
+
+}
+
+CfgNode* buildCfgForBreak(AstNode* breakNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack) {
+    if (!breakNode || strcmp(breakNode->nodeName, "BreakStatement") != 0) {
+        return previousNode;
+    }
+    // Создаем узел для BreakStatement
+    CfgNode* breakNodeCfg = createCfgNode(cfg, CFG_NODE_BREAK, breakNode, "Break Statement");
+    addSuccessor(previousNode, breakNodeCfg);
+
+    // Найти ближайший узел выхода из цикла из стека
+    CfgNode* targetLoopExitNode = peek(*loopStack);
+    if (targetLoopExitNode) {
+        // Добавляем связь от break к узлу выхода из цикла
+        addSuccessor(breakNodeCfg, targetLoopExitNode);
+    } else {
+        // Ошибка: оператор break находится вне контекста цикла
+        addCfgError(cfg->errors, "'break' statement found outside of a loop context.");
+    }
+
+    // Возвращаем узел выхода из цикла, так как после break дальнейшая цепочка не обрабатывается
+    return breakNodeCfg;
+}
+
+//-----------------------------
+//Ф-ии построения Дерева Операций 
 
 OperationTree* createOperationTree(char* operation, int childCount) {
     OperationTree* node = malloc(sizeof(OperationTree));
@@ -348,273 +801,48 @@ void buildOperTreeForExpr(AstNode* expressionNode, CfgNode* previousNode) {
     previousNode->operationCount += 1;
 }
 
-CfgNode* buildCfgForExprStatement(AstNode* statement, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack* loopStack) {
-    if (!statement || strcmp(statement->nodeName, "ExpressionStatement") != 0) {
-        return previousNode;
-    }
-
-    // Переходим к обработке потомка "Expression"
-    if (statement->childrenCount > 0) {
-        AstNode* expressionNode = statement->children[0]; // Потомок Expression
-        CfgNode* expressionCfgNode = createCfgNode(cfg, CFG_NODE_STATEMENT, expressionNode, "Expression Statement");
-        addSuccessor(previousNode, expressionCfgNode);
-
-        // Используем buildOperTreeForExpr для обработки узла Expression и добавления дерева операций к узлу CFG
-        buildOperTreeForExpr(expressionNode, expressionCfgNode);
-        
-        return expressionCfgNode; // Возвращаем узел выражения для дальнейшей цепочки
-    }
-
-    // Если потомка нет, возвращаем узел "Expression statement"
-    return previousNode;
-}
-
-CfgNode* buildCfgForBlock(AstNode* blockNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack* loopStack) {
-    if (!blockNode || strcmp(blockNode->nodeName, "BlockStatement") != 0 ) { 
-        return previousNode;
-    }
-
-    // Создаем узел для входа в блок
-    CfgNode* blockEntryNode = createCfgNode(cfg, CFG_NODE_BLOCK, NULL, "Block");
-    addSuccessor(previousNode, blockEntryNode);
-
-    CfgNode* currentNode = blockEntryNode;
-
-    // Обработка всех операторов внутри блока
-    for (int i = 0; i < blockNode->childrenCount; i++) {
-        AstNode* childStatement = blockNode->children[i];
-
-        // Рекурсивный вызов диспетчера для каждого дочернего узла
-        currentNode = buildCfgNodeByType(childStatement, currentNode, cfg, loopStack);
-
-        // Проверяем, если текущий узел является `break`, прерываем дальнейшую обработку блока
-        if (currentNode->type == CFG_NODE_BREAK) {
-            // Возвращаем узел `break`, чтобы внешняя функция могла корректно обработать его
-            return currentNode;
-        }
-    }
-
-    return currentNode;
-}
-
-CfgNode* buildCfgForIf(AstNode* ifNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack* loopStack) {
-    if (!ifNode || strcmp(ifNode->nodeName, "IfStatement") != 0) {
-        return previousNode;
-    }
-
-    // В AST для If: 
-    // children[0] - условие
-    // children[1] - then-ветка 
-    // children[2] - else-ветка (optional)
-    AstNode* conditionNode = ifNode->children[0];
-    AstNode* thenStatementNode = ifNode->children[1];
-    AstNode* elseStatementNode = (ifNode->childrenCount > 2) ? ifNode->children[2] : NULL;
-
-    // Создаем узел условия
-    CfgNode* conditionCfgNode = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "IF Condition");
-    addSuccessor(previousNode, conditionCfgNode);
-    
-    buildOperTreeForExpr(conditionNode, conditionCfgNode);
-
-    // Создаем узлы для ветвления
-    CfgNode* thenEndNode = buildCfgNodeByType(thenStatementNode, conditionCfgNode, cfg, loopStack);
-    
-    if (thenEndNode->type == CFG_NODE_BREAK && elseStatementNode == NULL){
-        return thenEndNode;
-        printf("norm1\n");
-    }
-
-    if (elseStatementNode != NULL){
-
-        CfgNode* elseEndNode = buildCfgNodeByType(elseStatementNode, conditionCfgNode, cfg, loopStack);
-   
-        if (elseEndNode->type == CFG_NODE_BREAK && thenEndNode->type == CFG_NODE_BREAK){
-            // Сценарий 2: Оба содержат break, возвращаем любой из них
-            return thenEndNode; // или elseEndNode - в зависимости от того, что более подходит
-        }
-
-        if (elseEndNode->type != CFG_NODE_BREAK && thenEndNode->type == CFG_NODE_BREAK){
-            // Сценарий 3: Только ветка Then содержит break, Else продолжается
-            return elseEndNode;
-        }
-
-        if (elseEndNode->type == CFG_NODE_BREAK && thenEndNode->type != CFG_NODE_BREAK){
-            // Сценарий 4: Только ветка Else содержит break, Then продолжается
-            return thenEndNode;
-        }
-
-        if (elseEndNode->type != CFG_NODE_BREAK && thenEndNode->type != CFG_NODE_BREAK){
-            // Стандартная обработка обеих ветвей, создаем узел слияния
-            CfgNode* mergeNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "IF Merge");
-            addSuccessor(thenEndNode, mergeNode);
-            addSuccessor(elseEndNode, mergeNode);
-            return mergeNode;
-        }
-    } else {
-        // Если else-ветка отсутствует, создаем узел слияния только для then-ветки
-        CfgNode* mergeNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "IF Merge");
-        addSuccessor(thenEndNode, mergeNode);
-        return mergeNode;
-    }
-
-    // На случай если else отсутствует и thenEndNode не содержит break
-    return thenEndNode;
-    
-}
-
-CfgNode* buildCfgForWhile(AstNode* whileNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack) {
-    if (!whileNode || strcmp(whileNode->nodeName, "WhileStatement") != 0) {
-        return previousNode;
-    }
-    printf("While\n");
-    // Создаем узел для условия while
-    AstNode* conditionNode = whileNode->children[0];
-    CfgNode* conditionNodeCfg = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "While Condition");
-    addSuccessor(previousNode, conditionNodeCfg);
-
-    // Строим дерево операций для условия и прикрепляем к узлу CFG
-    buildOperTreeForExpr(conditionNode, conditionNodeCfg);
-
-    // Создаем узел "After While" для выхода из цикла
-    CfgNode* afterWhileNode = createCfgNode(cfg, CFG_NODE_STATEMENT, NULL, "After While");
-
-    // Добавляем узел выхода из цикла в стек для break
-    push(loopStack, afterWhileNode);
-
-    // Строим граф для тела цикла
-    AstNode* bodyNode = whileNode->children[1];
-    CfgNode* bodyEndNode = buildCfgNodeByType(bodyNode, conditionNodeCfg, cfg, *loopStack);
-
-    printf("%s\n", bodyEndNode->label);
-    // Проверяем, был ли `break`
-    if (bodyEndNode->type == CFG_NODE_BREAK) {
-        // Если `break` найден, связать условие с узлом выхода и завершить цикл
-        printf("sdfsdfds");
-        addSuccessor(conditionNodeCfg, afterWhileNode);
-        pop(loopStack);
-        return afterWhileNode;
-    }
-
-    // Добавляем связь от конца тела к условию, чтобы вернуться и проверить условие снова
-    addSuccessor(bodyEndNode, conditionNodeCfg);
-
-    // Условие ведет в узел выхода, если проверка завершена
-    addSuccessor(conditionNodeCfg, afterWhileNode);
-
-    // Удаляем узел из стека после завершения обработки тела цикла
-    pop(loopStack);
-
-    return afterWhileNode;
-}
-
-CfgNode* buildCfgForDoWhile(AstNode* doWhileNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack) {
-    if (!doWhileNode || strcmp(doWhileNode->nodeName, "DoStatement") != 0) {
-        return previousNode;
-    }
-
-    // В AST для do-while:
-    // children[0] - тело цикла
-    // children[1] - условие
-
-    // Создаем узел для тела цикла
-    AstNode* bodyNode = doWhileNode->children[0];
-    CfgNode* bodyNodeCfg = createCfgNode(cfg, CFG_NODE_BLOCK, bodyNode, "DoWhile Body");
-    addSuccessor(previousNode, bodyNodeCfg);
-
-    CfgNode* endNodeCfg = createCfgNode(cfg, CFG_NODE_STATEMENT, bodyNode, "After DoWhile");
-
-
-    // Добавляем узел выхода из цикла в стек для break
-    push(loopStack, endNodeCfg);
-
-    // Строим граф для тела цикла
-    CfgNode* bodyEndNode = buildCfgNodeByType(bodyNode, bodyNodeCfg, cfg, *loopStack);
-    
-    if(bodyEndNode->type == CFG_NODE_BREAK){
-        pop(loopStack);
-        return endNodeCfg;
-    } 
-    
-    // Создаем узел для условия
-    AstNode* conditionNode = doWhileNode->children[1];
-    CfgNode* conditionNodeCfg = createCfgNode(cfg, CFG_NODE_CONDITION, conditionNode, "DoWhile Condition");
-    
-    // Добавляем дерево операций
-    buildOperTreeForExpr(conditionNode, conditionNodeCfg);
-    
-    addSuccessor(bodyEndNode, conditionNodeCfg);
-    addSuccessor(conditionNodeCfg, bodyNodeCfg);
-    addSuccessor(conditionNodeCfg, endNodeCfg);
-    pop(loopStack);
-    return endNodeCfg;
-
-}
-
-CfgNode* buildCfgForBreak(AstNode* breakNode, CfgNode* previousNode, ControlFlowGraph* cfg, CfgNodeStack** loopStack) {
-    if (!breakNode || strcmp(breakNode->nodeName, "BreakStatement") != 0) {
-        return previousNode;
-    }
-    printf("Break\n");
-    // Создаем узел для BreakStatement
-    CfgNode* breakNodeCfg = createCfgNode(cfg, CFG_NODE_BREAK, breakNode, "Break Statement");
-    addSuccessor(previousNode, breakNodeCfg);
-
-    // Найти ближайший узел выхода из цикла из стека
-    CfgNode* targetLoopExitNode = peek(*loopStack);
-    if (targetLoopExitNode) {
-        // Добавляем связь от break к узлу выхода из цикла
-        addSuccessor(breakNodeCfg, targetLoopExitNode);
-    } else {
-        // Ошибка: оператор break находится вне контекста цикла
-        fprintf(stderr, "Error: 'break' statement found outside of a loop context.\n");
-    }
-
-    // Возвращаем узел выхода из цикла, так как после break дальнейшая цепочка не обрабатывается
-    return breakNodeCfg;
-}
-
 const char* mapAstOperationToOperationName(const char* astOperation) {
-    if (strcmp(astOperation, ":=") == 0) {
+    if (strcmp(astOperation, ":=") == 0) { //
         return "set";
-    } else if (strcmp(astOperation, "==") == 0) {
+    } else if (strcmp(astOperation, "==") == 0) { //
         return "eq";
-    } else if (strcmp(astOperation, "!=") == 0) {
-        return "not_equal";
-    } else if (strcmp(astOperation, "<") == 0) {
+    } else if (strcmp(astOperation, "!=") == 0) { //
+        return "not_eq";
+    } else if (strcmp(astOperation, "<") == 0) { //
         return "less";
-    } else if (strcmp(astOperation, "<=") == 0) {
-        return "less_equal";
-    } else if (strcmp(astOperation, ">") == 0) {
+    } else if (strcmp(astOperation, "<=") == 0) { //
+        return "less_eq";
+    } else if (strcmp(astOperation, ">") == 0) { //
         return "greater";
-    } else if (strcmp(astOperation, ">=") == 0) {
-        return "greater_equal";
-    } else if (strcmp(astOperation, "+") == 0) {
+    } else if (strcmp(astOperation, ">=") == 0) { //
+        return "greater_eq";
+    } else if (strcmp(astOperation, "+") == 0) { //
         return "add";
-    } else if (strcmp(astOperation, "-") == 0) {
+    } else if (strcmp(astOperation, "-") == 0) { //
         return "sub";
-    } else if (strcmp(astOperation, "*") == 0) {
+    } else if (strcmp(astOperation, "*") == 0) { //
         return "mul";
-    } else if (strcmp(astOperation, "/") == 0) {
+    } else if (strcmp(astOperation, "/") == 0) { //
         return "div";
-    } else if (strcmp(astOperation, "%") == 0) {
+    } else if (strcmp(astOperation, "%") == 0) { //
         return "mod";
-    } else if (strcmp(astOperation, "&&") == 0) {
+    } else if (strcmp(astOperation, "&&") == 0) { //
         return "and";
-    } else if (strcmp(astOperation, "||") == 0) {
+    } else if (strcmp(astOperation, "||") == 0) { //
         return "or";
     } else if (strcmp(astOperation, "!") == 0) {
         return "not";
-    } else if (strcmp(astOperation, "^") == 0) {
+    } else if (strcmp(astOperation, "^") == 0) { //
         return "xor";
-    } else if (strcmp(astOperation, "&") == 0) {
+    } else if (strcmp(astOperation, "&") == 0) { //
         return "b_and";
-    } else if (strcmp(astOperation, "|") == 0) {
+    } else if (strcmp(astOperation, "|") == 0) { //
         return "b_or";
-    } else if (strcmp(astOperation, "~") == 0) {
+    } else if (strcmp(astOperation, "~") == 0) { //???
         return "b_not";
-    } else if (strcmp(astOperation, "<<") == 0) {
+    } else if (strcmp(astOperation, "<<") == 0) { //
         return "shift_left";
-    } else if (strcmp(astOperation, ">>") == 0) {
+    } else if (strcmp(astOperation, ">>") == 0) { //
         return "shift_right";
     }
     // Возвращаем исходную строку, если она не найдена в списке
@@ -671,6 +899,10 @@ void destroyControlFlowGraph(ControlFlowGraph* cfg) {
     // Освобождаем массив узлов
     free(cfg->nodes);
 
+    // Освобождаем струтуру коллекции ошибок
+    destroyErrorCollection(cfg->errors);
+    free(cfg->errors);
+
     // Освобождаем память для информации о функции
     if (cfg->functionName) {
         free(cfg->functionName);
@@ -680,18 +912,13 @@ void destroyControlFlowGraph(ControlFlowGraph* cfg) {
         free(cfg->returnType);
     }
 
-    if (cfg->argumentNames) {
+    if (cfg->arguments) {
         for (int i = 0; i < cfg->argumentCount; i++) {
-            free(cfg->argumentNames[i]);
+            free(cfg->arguments[i]->name);
+            free(cfg->arguments[i]->type);
+            free(cfg->arguments[i]);
         }
-        free(cfg->argumentNames);
-    }
-
-    if (cfg->argumentTypes) {
-        for (int i = 0; i < cfg->argumentCount; i++) {
-            free(cfg->argumentTypes[i]);
-        }
-        free(cfg->argumentTypes);
+        free(cfg->arguments);
     }
 
     // Освобождаем сам граф
@@ -753,6 +980,19 @@ void writeCfgAsDot(ControlFlowGraph* cfg, const char* filename) {
     printf("DOT file saved: %s\n", filename);
 }
 
+void destroyErrorCollection(ErrorCollection* collection) {
+    ErrorInfoCfg* current = collection->head;
+    while (current) {
+        ErrorInfoCfg* toDelete = current;
+        current = current->next;
+        free(toDelete->message);
+        free(toDelete);
+    }
+    collection->head = NULL;
+    collection->tail = NULL;
+    collection->count = 0;
+}
+
 void destroyCfgNodeStack(CfgNodeStack* stack) {
     if (!stack) return;
 
@@ -777,5 +1017,3 @@ void destroyOperationTree(OperationTree* node) {
     free(node);
 }
 
-//TODO
-// подумать над созданием ф-ии для парсинга типа (для случаев сложных типов)

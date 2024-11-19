@@ -1,5 +1,5 @@
-method myFunction(x : int, flag2 : MyType, VAL32 : array [,] of string) : uint
-var fst_val, scnd_val, thd_val : long;
+method myFunction(x, flag2 : MyType, VAL32 : bool, y : array [] of array[,,,] of Type) : uint
+var fst_val, scnd_val : MyType; thd_val : long; fth_val, sxth_val : array [,,] of char;
 begin 
     while fst_val > (scnd_val - thd_val) do begin
         while a != b do begin 

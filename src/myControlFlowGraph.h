@@ -45,6 +45,23 @@ typedef struct CfgNode {
     int predecessorCapacity;
 } CfgNode;
 
+// Структуры для обработки ошибок
+typedef struct ErrorInfoCfg {
+    char* message;
+    struct ErrorInfoCfg* next;
+} ErrorInfoCfg;
+
+typedef struct {
+    ErrorInfoCfg* head;
+    ErrorInfoCfg* tail;
+    int count;
+} ErrorCollection;
+
+typedef struct {
+    char* name;  // Название переменной
+    char* type;  // Тип переменной
+} VariableInfo;
+
 // Структура графа потока управления
 typedef struct {
     CfgNode* entryNode;                 // Входной узел
@@ -52,12 +69,12 @@ typedef struct {
     CfgNode** nodes;                    // Массив всех узлов
     int nodeCount;
     int nodeCapacity;
+    ErrorCollection* errors;
 
     // Поля для хранения информации о функции
     char* functionName;
     char* returnType;
-    char** argumentNames;
-    char** argumentTypes;
+    VariableInfo** arguments;
     int argumentCount;
 } ControlFlowGraph;
 
@@ -98,6 +115,14 @@ OperationTree* buildOperationTreeFromAst(AstNode* astNode);
 void destroyOperationTree(OperationTree* opTree);
 void writeOperationTreeAsDot(OperationTree* operation, FILE* file, const char* parentLabel);
 const char* mapAstOperationToOperationName(const char* astOperation);
+
+// Функции для работы с ошибками
+void addCfgError(ErrorCollection* collection, const char* message);
+void destroyErrorCollection(ErrorCollection* collection);
+
+// Функции для обработки переменных
+char* handleVariableType(AstNode* typeNode, ControlFlowGraph* cfg);
+void handleVarsDefenition(AstNode* varsDefNode, ControlFlowGraph* cfg);
 
 // Работа с break
 
